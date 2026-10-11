@@ -218,3 +218,38 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+deploy.env
+*.env
+
+# Keys and certificates
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+
+# Credentials and config that may hold tokens
+secrets/
+credentials*.json
+*.secret
+*.secrets
+
+# Database and data files
+*.sqlite
+*.db
+pgdata/
+postgres-data/
+grafana-data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+tf-env/
