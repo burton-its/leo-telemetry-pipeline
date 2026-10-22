@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ISS Telemetry Display Prototype</title>
+  <style>
+    :root {
+      font-family: system-ui, Arial, sans-serif;
+      color: #eaf2ff;
+      background: #0b1220;
+    }
+
+    body { margin: 0; padding: 32px; }
+    main { max-width: 980px; margin: auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 28px; }
+    p { color: #a9bbd4; }
+    .pill {
+      background: #153c37;
+      color: #7ee3c1;
+      padding: 8px 14px;
+      border-radius: 24px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+      margin: 30px 0;
+    }
+    .card {
+      background: #18243a;
+      border: 1px solid #2d3e58;
+      border-radius: 14px;
+      padding: 22px;
+    }
+    .label {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .09em;
+      color: #a9bbd4;
+    }
+    .value { font-size: 34px; font-weight: 700; margin: 12px 0; }
+    .unit { font-size: 16px; color: #a9bbd4; }
+    .foot { font-size: 13px; color: #a9bbd4; }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: #76b9ff;
+      color: #0b1220;
+      font-weight: 700;
+      padding: 10px 16px;
+      cursor: pointer;
+    }
+    button:focus-visible { outline: 3px solid white; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>ISS Telemetry Monitor</h1>
+        <p>CS467 · Display prototype · International Space Station</p>
+      </div>
+      <span class="pill" id="status">● UPDATING</span>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <div class="label">Battery voltage</div>
+        <div class="value">
+          <span id="voltage">28.4</span>
+          <span class="unit">V</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="label">Temperature</div>
+        <div class="value">
+          <span id="temp">22.1</span>
+          <span class="unit">°C</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="label">Packet count</div>
+        <div class="value" id="packets">0</div>
+      </section>
+
+      <section class="card">
+        <div class="label">Last update</div>
+        <div class="value" style="font-size: 24px" id="updated">—</div>
+        <div class="foot">Local time</div>
+      </section>
+    </div>
+
+    <button id="toggle">Pause updates</button>
+  </main>
+
+  <script>
+    let packets = 0;
+    let running = true;
+
+    function renderTelemetry(data) {
+      document.getElementById('voltage').textContent =
+        data.voltage.toFixed(1);
+      document.getElementById('temp').textContent =
+        data.temperature.toFixed(1);
+      document.getElementById('packets').textContent =
+        String(++packets);
+      document.getElementById('updated').textContent =
+        new Date(data.timestamp).toLocaleTimeString();
+    }
+
+    // Temporary sample data source until the telemetry pipeline is connected.
+    function sampleTelemetry() {
+      return {
+        voltage: 28.4 + (Math.random() - 0.5) * 1.2,
+        temperature: 22.1 + (Math.random() - 0.5) * 3,
+        timestamp: Date.now()
+      };
+    }
+
+    function tick() {
+      if (running) {
+        renderTelemetry(sampleTelemetry());
+      }
+    }
+
+    tick();
+    setInterval(tick, 2000);
+
+    document.getElementById('toggle').addEventListener('click', () => {
+      running = !running;
+      document.getElementById('toggle').textContent =
+        running ? 'Pause updates' : 'Resume updates';
+      document.getElementById('status').textContent =
+        running ? '● UPDATING' : '● PAUSED';
+    });
+  </script>
+</body>
+</html>
