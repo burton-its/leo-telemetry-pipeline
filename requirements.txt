@@ -1,1 +1,5 @@
-   requests
+requests
+aprslib
+ax253
+crcmod
+matplotlib
