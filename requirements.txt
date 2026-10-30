@@ -1,1 +1,6 @@
    requests
+   httpx
+   dotenv
+   numpy
+   skyfield
+   pytest
