@@ -1,0 +1,1 @@
+"""Storage stage: load DecodedFrames into SQLite and export JSON for the dashboard."""
