@@ -115,7 +115,7 @@ def get_tle(norad_id=25544):
         return None
 
 
-# TLE-based Satellite telemetry:
+# TLE-based Satellite Telemetry:
 class SatTelemetry(NamedTuple):
     sat_name: str
     norad_id: int
