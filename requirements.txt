@@ -1,3 +1,4 @@
-   requests
-   numpy
-   skyfield
+requests
+numpy
+skyfield
+aprslib
