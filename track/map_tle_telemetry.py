@@ -210,7 +210,7 @@ if __name__ == "__main__":
 
     # NOTE: Add NORAD ID inside of '()'
     # in order to test other LEOs:
-    tle = _tle_cache(7530)
+    tle = _tle_cache()
 
     # Prints formatted telemetry output:
     for telemetry, value in map_tle_telemetry(tle)._asdict().items():
