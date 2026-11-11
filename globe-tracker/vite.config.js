@@ -13,7 +13,7 @@ export default defineConfig({
     CESIUM_BASE_URL: JSON.stringify(`/${cesiumBaseUrl}`),
   },
 
-  // LEO Telemetry API:
+  // Connect LEO Telemetry API:
   server: {
     proxy: {
         "/api": "http://127.0.0.1:8000",
