@@ -17,14 +17,14 @@ step = 60  # How often to sample (1 min).
 
 def _iso(dt):
     """
-    Convert a datetime object to an ISO 8601 UTC string.
+    Helper used to convert a datetime object to an ISO 8601 UTC string.
     """
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def generate_czml(norad_ids):
     """
-    Generate CZML for the given NORAD IDs.
+    Generates CZML for given NORAD ID(s).
     """
 
     # Current time for the CZML clock.
