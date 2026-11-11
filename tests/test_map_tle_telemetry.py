@@ -30,6 +30,9 @@ EXPECTED_TELEMETRY = mtt.SatTelemetry(
     speed_inertial_kms=7.70461745,
     speed_earth_kms=7.40046560,
     speed_ground_kms=7.00976737,
+    computed_at=datetime(2008, 9, 20, 12, 25, 40, 104187, tzinfo=timezone.utc),
+    line1=ISS_LINE_ONE,
+    line2=ISS_LINE_TWO,
 )
 
 
@@ -46,7 +49,7 @@ class TestGetTLE(unittest.TestCase):
         for bad_id in ["ISS", "255 44", -5, 0, 25544.7, 99999999]:
             with self.subTest(bad_id=bad_id):
                 with patch.object(mtt.requests, "get") as mock_get, self.assertLogs(mtt.logger, level="ERROR"):  # noqa: E501
-                    self.assertIsNone(mtt.get_tle(bad_id))
+                    self.assertFalse(mtt.get_tle(bad_id))
                 mock_get.assert_not_called()
 
     # Test if valid IDs are accepted:
@@ -61,18 +64,18 @@ class TestGetTLE(unittest.TestCase):
     # Test for when response != 200:
     def test_non_200_status_returns_none(self):
         with patch.object(mtt.requests, "get", return_value=fr("", status=503)), self.assertLogs(mtt.logger, level="ERROR"):  # noqa: E501
-            self.assertIsNone(mtt.get_tle(25544))
+            self.assertFalse(mtt.get_tle(25544))
 
     # Test for when there is no CelesTrak TLE returned:
     def test_no_data_message_returns_none(self):
         with patch.object(mtt.requests, "get", return_value=fr("No GP data found")), self.assertLogs(mtt.logger, level="ERROR"):  # noqa: E501
-            self.assertIsNone(mtt.get_tle(99999))
+            self.assertFalse(mtt.get_tle(99999))
 
     # Test for when the CelesTrak API is offline:
     def test_network_failure_returns_none(self):
         offline = requests.ConnectionError("offline")
         with patch.object(mtt.requests, "get", side_effect=offline), self.assertLogs(mtt.logger, level="ERROR"):  # noqa: E501
-            self.assertIsNone(mtt.get_tle(25544))
+            self.assertFalse(mtt.get_tle(25544))
 
 
 class TestGoldenFixture(unittest.TestCase):
