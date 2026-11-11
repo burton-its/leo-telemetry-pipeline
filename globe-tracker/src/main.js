@@ -55,17 +55,17 @@ viewer.scene.globe.enableLighting = true;
 viewer.clock.shouldAnimate = true;  // Run clock despite hidden animation widget.
 
 
-// Load CZML files:
+// Prep LEOs:
 const satellites = new CzmlDataSource();
 viewer.dataSources.add(satellites);
 
 
-// Render LEOs using CZMLs.
+// Render LEOs:
 const reload = async () => {
 
   try {
 
-    // Load LEOs + tele:
+    // Load CZMLs:
     await satellites.load(CZML_URL);
     await updateTelemetry();
 
