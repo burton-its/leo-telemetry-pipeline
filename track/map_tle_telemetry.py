@@ -36,7 +36,7 @@ def _tle_cache(norad_id=25544):
     path = TLE_CACHE / f"{str(norad_id).strip()}.tle"
 
     # Check for existing TLE + time to refresh limit:
-    if path.exists() and time.time() - path.stat().st_mtime < TLE_REFRESH_LIMIT:
+    if path.exists() and time.time() - path.stat().st_mtime < TLE_REFRESH_LIMIT:  # noqa: E501
         logger.debug("Using recently cached TLE for %s", norad_id)
         return tuple(path.read_text().splitlines())
 
@@ -75,7 +75,7 @@ def get_tle(norad_id=25544):
 
     # Check if NORAD ID is valid:
     norad_id = str(norad_id).strip()
-    if not norad_id.isdecimal() or not 0 < int(norad_id) <= 339999:  # Upper bound of Alpha-5 NORAD ID catalogue.
+    if not norad_id.isdecimal() or not 0 < int(norad_id) <= 339999:  # Upper bound of Alpha-5 NORAD ID catalogue.  # noqa: E501
         logger.error("Invalid NORAD ID: %s", norad_id)
         return None
 
@@ -110,7 +110,7 @@ def get_tle(norad_id=25544):
     else:
 
         # Report error:
-        logger.error("CelesTrak returned HTTP %s for NORAD ID %s", 
+        logger.error("CelesTrak returned HTTP %s for NORAD ID %s",
                      tle.status_code, norad_id)
         return None
 
@@ -156,20 +156,20 @@ def map_tle_telemetry(tle, when=None):
     int_desig = line_one[9:17].strip()
 
     # EPOCH TIME (UTC) & TLE AGE
-    time = TIMESCALE.from_datetime(when) if when else TIMESCALE.now()
+    t = TIMESCALE.from_datetime(when) if when else TIMESCALE.now()
     utc_epoch = sat.epoch.utc_datetime()
-    tle_age_hours = (time - sat.epoch) * 24
+    tle_age_hours = (t - sat.epoch) * 24
 
     # INCLINATION (deg)
     inclination = math.degrees(sat.model.inclo)
 
     # POSITION (lat, lon, alt) & VELOCITY (km/s)
     # Calculate position at given time:
-    pos = sat.at(time)
+    pos = sat.at(t)
 
     # Check for null value from SGP4:
     if np.isnan(pos.position.km).any():
-        logger.error("SGP4 cannot estimate position for NORAD %s: %s", 
+        logger.error("SGP4 cannot estimate position for NORAD %s: %s",
                      norad_id, pos.message)
         return None
 
@@ -206,7 +206,7 @@ def map_tle_telemetry(tle, when=None):
 if __name__ == "__main__":
 
     logging.basicConfig(level=logging.DEBUG,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")  # noqa: E501
 
     # NOTE: Add NORAD ID inside of '()'
     # in order to test other LEOs:

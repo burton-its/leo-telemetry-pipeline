@@ -1,6 +1,6 @@
 import unittest
 import requests
-import map_tle_telemetry as mtt
+import track.map_tle_telemetry as mtt
 
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
