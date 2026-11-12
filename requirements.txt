@@ -1,4 +1,8 @@
-requests
-numpy
-skyfield
-aprslib
+   requests
+   numpy
+   skyfield
+   aprslib
+   ax253
+   crcmod
+   matplotlib
+   dotenv
