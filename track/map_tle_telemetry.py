@@ -3,6 +3,7 @@ import requests
 import logging
 import math
 import time
+import os
 
 from skyfield.api import EarthSatellite, load, wgs84
 from skyfield.framelib import itrs
@@ -22,6 +23,10 @@ HEADERS = {"User-Agent": "LEO-Telemetry-Project"}
 TLE_CACHE = Path("data/tle")
 TLE_REFRESH_LIMIT = 7200  # ~2 hours in seconds.
 
+# Handle rate limiting & 404s:
+TLE_RETRY_DELAY = 3600  # 1 hour delay after failed refresh.
+TLE_INVALID = 4102444800  # Knocks this into the year 2100 LOL
+
 # Timescale & radius for position and velocity calculations:
 TIMESCALE = load.timescale()
 EARTH_RADIUS_KM = 6371.0
@@ -35,25 +40,39 @@ def _tle_cache(norad_id=25544):
 
     path = TLE_CACHE / f"{str(norad_id).strip()}.tle"
 
-    # Check for existing TLE + time to refresh limit:
+    # Look for existing TLE & check against refresh limit:
     if path.exists() and time.time() - path.stat().st_mtime < TLE_REFRESH_LIMIT:  # noqa: E501
-        logger.debug("Using recently cached TLE for %s", norad_id)
-        return tuple(path.read_text().splitlines())
 
-    # Refresh TLE:
+        # Use recent TLE:
+        logger.debug("Using recently cached TLE for %s", norad_id)
+        return tuple(path.read_text().splitlines()) or None
+
+    # Create placeholder if no cache retrieved:
+    TLE_CACHE.mkdir(parents=True, exist_ok=True)
+    path.touch()
+
+    # Prevent repeated CelesTrak calls by marking
+    # stale cache as fresh until fetch completes:
+    backoff = time.time() - TLE_REFRESH_LIMIT + TLE_RETRY_DELAY
+    os.utime(path, (backoff, backoff))
+
+    # If stale -> refresh TLE:
     tle = get_tle(norad_id)
 
-    # Fallback if no new TLE received but a cached TLE is present:
-    # (e.g. due to network err from CelesTrak)
-    if tle is None:
-        if path.exists():
-            logger.warning("Failed request: using stale (>%g hour(s) old) TLE for %s.",  # noqa: E501
-                           (TLE_REFRESH_LIMIT/60)/60, norad_id)
-            return tuple(path.read_text().splitlines())
+    # Handle 404-ing LEOs:
+    if tle is False:
+        path.write_text("")
+        os.utime(path, (TLE_INVALID, TLE_INVALID))
+        logger.warning("No TLE exists for %s. Not retrying.", norad_id)
         return None
 
-    # Create directory and store refreshed TLE data:
-    TLE_CACHE.mkdir(parents=True, exist_ok=True)
+    # Refresh failed (invalid ID, network error, HTTP error, blocked, etc.):
+    if tle is None:
+        logger.warning("TLE refresh failed for %s; retrying in %d s.",
+                       norad_id, TLE_RETRY_DELAY)
+        return tuple(path.read_text().splitlines()) or None
+
+    # Store refreshed TLE data:
     path.write_text("\n".join(tle))
 
     logger.info("Fetched new TLE for %s from CelesTrak API.", norad_id)
@@ -77,7 +96,7 @@ def get_tle(norad_id=25544):
     norad_id = str(norad_id).strip()
     if not norad_id.isdecimal() or not 0 < int(norad_id) <= 339999:  # Upper bound of Alpha-5 NORAD ID catalogue.  # noqa: E501
         logger.error("Invalid NORAD ID: %s", norad_id)
-        return None
+        return False
 
     # Get raw TLE byte report from Celestrak DB:
     try:
@@ -112,7 +131,7 @@ def get_tle(norad_id=25544):
         # Report error:
         logger.error("CelesTrak returned HTTP %s for NORAD ID %s",
                      tle.status_code, norad_id)
-        return None
+        return False if tle.status_code == 404 else None
 
 
 # TLE-based Satellite Telemetry:
@@ -129,6 +148,9 @@ class SatTelemetry(NamedTuple):
     speed_inertial_kms: float
     speed_earth_kms: float
     speed_ground_kms: float
+    computed_at: datetime
+    line1: str
+    line2: str
 
 
 def map_tle_telemetry(tle, when=None):
@@ -200,6 +222,9 @@ def map_tle_telemetry(tle, when=None):
         speed_inertial_kms=float(speed_inertial),
         speed_earth_kms=float(speed_earth),
         speed_ground_kms=float(speed_ground),
+        computed_at=t.utc_datetime(),
+        line1=line_one,
+        line2=line_two,
     )
 
 
