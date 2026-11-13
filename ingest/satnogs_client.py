@@ -65,9 +65,18 @@ class SatNOGSClient:
         return frames
 
     def _get(self, url: str, params: dict | None) -> requests.Response:
-        """GET with retries on rate limits (429) and server errors (5xx)."""
+        """GET with retries on network errors, rate limits (429) and server errors (5xx)."""
         for attempt in range(self.max_retries + 1):
-            response = self.session.get(url, params=params, timeout=self.timeout)
+            try:
+                response = self.session.get(url, params=params, timeout=self.timeout)
+            except (requests.ConnectionError, requests.Timeout) as err:
+                if attempt == self.max_retries:
+                    raise
+                wait = self._backoff_seconds(None, attempt)
+                logger.warning("SatNOGS unreachable (%s), retrying in %.0fs (attempt %d/%d)",
+                               type(err).__name__, wait, attempt + 1, self.max_retries)
+                time.sleep(wait)
+                continue
 
             if response.status_code in (401, 403):
                 raise SatNOGSAuthError(
@@ -86,9 +95,9 @@ class SatNOGSClient:
         raise RuntimeError("unreachable")  # loop always returns or raises
 
     @staticmethod
-    def _backoff_seconds(response: requests.Response, attempt: int) -> float:
+    def _backoff_seconds(response: requests.Response | None, attempt: int) -> float:
         """Use the server's Retry-After if it gave one, else exponential backoff."""
-        header = response.headers.get("Retry-After")
+        header = response.headers.get("Retry-After") if response is not None else None
         try:
             wait = float(header) if header is not None else DEFAULT_BACKOFF_SECONDS * 2 ** attempt
         except ValueError:

@@ -1,12 +1,14 @@
-"""Command-line entry point: python -m ingest [NORAD_ID]
+"""Command-line entry point: python -m ingest [NORAD_ID] [--every MINUTES]
 
 Fetches telemetry from SatNOGS and saves it to the raw_frames table in
-data/leo.db (duplicates are skipped automatically).
+data/leo.db (duplicates are skipped automatically). With --every, it keeps
+running and fetches again on that interval.
 
 For now it ALSO writes data/raw/<id>.jsonl, because the Decode stage still
 reads that file. Remove write_jsonl() once Decode reads from raw_frames.
 """
 
+import argparse
 import json
 import logging
 import os
@@ -15,9 +17,12 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
+import requests
+
 from ingest import db
 from ingest.models import RawFrame
 from ingest.satnogs_client import SatNOGSAuthError, SatNOGSClient, deduplicate
+from ingest.scheduler import run_every
 
 ISS_NORAD_ID = 25544
 OUTPUT_DIR = Path("data/raw")
@@ -25,31 +30,59 @@ OUTPUT_DIR = Path("data/raw")
 OVERLAP = timedelta(hours=6)  # look back this far to catch late uploads
 FIRST_RUN_PAGES = 5
 CATCH_UP_PAGES = 50
+MIN_INTERVAL_MINUTES = 15  # SatNOGS is free and volunteer-run, don't poll it harder than this
 
 
-def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    args = parse_args(argv)
 
     token = os.environ.get("SATNOGS_DB_TOKEN")
     if not token:
         print("Set the SATNOGS_DB_TOKEN environment variable first.", file=sys.stderr)
         return 1
-    norad_id = int(sys.argv[1]) if len(sys.argv) > 1 else ISS_NORAD_ID
+    client = SatNOGSClient(token)
 
-    conn = db.connect()
     try:
-        frames = fetch_since_checkpoint(SatNOGSClient(token), conn, norad_id)
-        inserted = db.save_frames(conn, frames)
+        if args.every is None:
+            ingest_once(client, args.norad_id)
+        else:
+            logging.info("Fetching NORAD %s every %g minutes. Press Ctrl+C to stop.", args.norad_id, args.every)
+            run_every(args.every * 60, lambda: ingest_once(client, args.norad_id),
+                      fatal=(SatNOGSAuthError,), expected=(requests.RequestException,))
     except SatNOGSAuthError as err:
         print(err, file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        logging.info("Stopped.")
+    return 0
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m ingest", description="Fetch SatNOGS telemetry into data/leo.db.")
+    parser.add_argument("norad_id", nargs="?", type=int, default=ISS_NORAD_ID,
+                        help=f"satellite to fetch (default: {ISS_NORAD_ID}, the ISS)")
+    parser.add_argument("--every", type=float, metavar="MINUTES",
+                        help=f"keep running and fetch every MINUTES (at least {MIN_INTERVAL_MINUTES})")
+    args = parser.parse_args(argv)
+    if args.every is not None and args.every < MIN_INTERVAL_MINUTES:
+        parser.error(f"--every must be at least {MIN_INTERVAL_MINUTES} minutes")
+    return args
+
+
+def ingest_once(client: SatNOGSClient, norad_id: int) -> int:
+    """One fetch-and-save pass. Returns how many new frames were saved."""
+    conn = db.connect()
+    try:
+        frames = fetch_since_checkpoint(client, conn, norad_id)
+        inserted = db.save_frames(conn, frames)
     finally:
         conn.close()
-    print(f"Saved {inserted} new frames ({len(frames) - inserted} already stored) to {db.DB_PATH}")
+    logging.info("Saved %d new frames (%d already stored) to %s", inserted, len(frames) - inserted, db.DB_PATH)
 
     out_path = write_jsonl(norad_id, deduplicate(frames))
-    print(f"Also wrote {out_path} for the Decode stage")
-    return 0
+    logging.info("Also wrote %s for the Decode stage", out_path)
+    return inserted
 
 
 def fetch_since_checkpoint(client: SatNOGSClient, conn: sqlite3.Connection, norad_id: int) -> list[RawFrame]:
