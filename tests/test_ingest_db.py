@@ -139,6 +139,73 @@ class TestFetchSinceCheckpoint(unittest.TestCase):
             25544, start="2026-10-28T13:00:00Z", max_pages=CATCH_UP_PAGES)
 
 
+class TestDecodeHandoff(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_new_frames_come_back_as_pending_oldest_first(self):
+        newer = make_frame("bb", timestamp="2026-10-28T20:00:00Z")
+        older = make_frame("aa", timestamp="2026-10-28T19:00:00Z")
+        db.save_frames(self.conn, [newer, older])
+
+        pending = db.get_pending_frames(self.conn, 25544)
+
+        self.assertEqual([frame for _, frame in pending], [older, newer])
+
+    def test_pending_frames_round_trip_exactly(self):
+        original = make_frame("c0ffee", observer="KJ6ABC")
+        db.save_frames(self.conn, [original])
+
+        [(frame_id, frame)] = db.get_pending_frames(self.conn, 25544)
+
+        self.assertIsInstance(frame_id, int)
+        self.assertEqual(frame, original)
+
+    def test_pending_is_per_satellite_and_respects_limit(self):
+        db.save_frames(self.conn, [make_frame("aa"), make_frame("bb"), make_frame("cc", norad_id=99999)])
+
+        self.assertEqual(len(db.get_pending_frames(self.conn, 25544)), 2)
+        self.assertEqual(len(db.get_pending_frames(self.conn, 25544, limit=1)), 1)
+
+    def test_marked_frames_are_no_longer_pending(self):
+        db.save_frames(self.conn, [make_frame("aa"), make_frame("bb")])
+        first_id, _ = db.get_pending_frames(self.conn, 25544)[0]
+
+        db.mark_decoded(self.conn, [first_id])
+
+        remaining = db.get_pending_frames(self.conn, 25544)
+        self.assertEqual(len(remaining), 1)
+        self.assertNotEqual(remaining[0][0], first_id)
+        decoded_at = self.conn.execute("SELECT decoded_at FROM raw_frames WHERE id = ?", (first_id,)).fetchone()[0]
+        self.assertIsNotNone(decoded_at)
+
+    def test_mark_decoded_with_no_ids_does_nothing(self):
+        db.save_frames(self.conn, [make_frame("aa")])
+
+        db.mark_decoded(self.conn, [])
+
+        self.assertEqual(len(db.get_pending_frames(self.conn, 25544)), 1)
+
+    def test_full_handoff_with_decode_and_store(self):
+        from decode.registry import decode_frame
+
+        conn = store_db.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.executescript(db.SCHEMA)
+        db.save_frames(conn, [make_frame("aa"), make_frame("bb", timestamp="2026-10-28T19:10:00Z")])
+
+        pending = db.get_pending_frames(conn, 25544)
+        decoded = [decode_frame(frame) for _, frame in pending]
+        store_db.insert_decoded(conn, [d.to_dict() for d in decoded])
+        db.mark_decoded(conn, [frame_id for frame_id, _ in pending])
+
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0], 2)
+        self.assertEqual(db.get_pending_frames(conn, 25544), [])
+
+
 class TestRecordRun(unittest.TestCase):
     def setUp(self):
         self.conn = db.connect(":memory:")

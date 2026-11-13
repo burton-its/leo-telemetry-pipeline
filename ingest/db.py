@@ -119,3 +119,34 @@ def get_checkpoint(conn: sqlite3.Connection, norad_id: int) -> datetime | None:
     if newest is None:
         return None
     return datetime.fromisoformat(newest)
+
+
+def get_pending_frames(conn: sqlite3.Connection, norad_id: int, limit: int = 1000) -> list[tuple[int, RawFrame]]:
+    """Frames the Decode stage hasn't processed yet, oldest first.
+
+    Returns (id, RawFrame) pairs. Pass the ids to mark_decoded() once the
+    decoded results are saved.
+    """
+    rows = conn.execute(
+        "SELECT id, norad_id, ts, observer, station_id, raw_hex FROM raw_frames "
+        "WHERE norad_id = ? AND decoded_at IS NULL ORDER BY ts, id LIMIT ?",
+        (norad_id, limit),
+    )
+    return [
+        (row["id"], RawFrame(
+            norad_id=row["norad_id"],
+            timestamp=datetime.fromisoformat(row["ts"]),
+            observer=row["observer"] or "unknown",
+            station_id=row["station_id"],
+            raw_bytes=bytes.fromhex(row["raw_hex"]),
+        ))
+        for row in rows
+    ]
+
+
+def mark_decoded(conn: sqlite3.Connection, frame_ids: list[int]) -> None:
+    """Stamp frames as decoded so get_pending_frames() stops returning them."""
+    decoded_at = datetime.now(timezone.utc).isoformat()
+    with conn:
+        conn.executemany("UPDATE raw_frames SET decoded_at = ? WHERE id = ?",
+                         [(decoded_at, frame_id) for frame_id in frame_ids])
