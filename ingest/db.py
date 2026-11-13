@@ -24,6 +24,31 @@ CREATE TABLE IF NOT EXISTS raw_frames (
     UNIQUE (norad_id, ts, raw_hex)     -- prevent duplicate frames
 );
 CREATE INDEX IF NOT EXISTS idx_raw_frames_pending ON raw_frames (norad_id, decoded_at);
+
+CREATE TABLE IF NOT EXISTS ingest_runs (
+    id            INTEGER PRIMARY KEY,
+    norad_id      INTEGER NOT NULL,
+    started_at    TEXT    NOT NULL,      -- ISO 8601 UTC
+    started_unix  INTEGER NOT NULL,      -- epoch seconds, for Grafana
+    finished_at   TEXT    NOT NULL,
+    status        TEXT    NOT NULL CHECK (status IN ('ok', 'error')),
+    fetched       INTEGER NOT NULL,      -- frames SatNOGS sent us
+    inserted      INTEGER NOT NULL,      -- frames that were new
+    error         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ingest_runs_sat_time ON ingest_runs (norad_id, started_unix);
+
+-- One row per satellite: is ingestion healthy?
+DROP VIEW IF EXISTS ingest_status;
+CREATE VIEW ingest_status AS
+SELECT norad_id,
+       MAX(started_at)                                  AS last_run,
+       MAX(CASE WHEN status = 'ok' THEN started_at END) AS last_success,
+       COUNT(*)                                         AS total_runs,
+       SUM(status = 'error')                            AS failed_runs,
+       SUM(fetched)                                     AS frames_fetched,
+       SUM(inserted)                                    AS frames_saved
+FROM ingest_runs GROUP BY norad_id;
 """
 
 
@@ -61,6 +86,22 @@ def save_frames(conn: sqlite3.Connection, frames: list[RawFrame]) -> int:
     with conn:
         conn.executemany(INSERT_SQL, rows)
     return conn.total_changes - before
+
+
+INSERT_RUN_SQL = """
+INSERT INTO ingest_runs (norad_id, started_at, started_unix, finished_at, status, fetched, inserted, error)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def record_run(conn: sqlite3.Connection, norad_id: int, started_at: datetime,
+               fetched: int, inserted: int, error: str | None = None) -> None:
+    """Log one ingest run. Pass `error` if the run failed."""
+    finished_at = datetime.now(timezone.utc)
+    status = "error" if error else "ok"
+    with conn:
+        conn.execute(INSERT_RUN_SQL, (norad_id, started_at.isoformat(), int(started_at.timestamp()),
+                                      finished_at.isoformat(), status, fetched, inserted, error))
 
 
 def get_checkpoint(conn: sqlite3.Connection, norad_id: int) -> datetime | None:

@@ -14,7 +14,7 @@ import logging
 import os
 import sqlite3
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -71,11 +71,17 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def ingest_once(client: SatNOGSClient, norad_id: int) -> int:
-    """One fetch-and-save pass. Returns how many new frames were saved."""
+    """One fetch-and-save pass, logged to ingest_runs. Returns how many new frames were saved."""
+    started_at = datetime.now(timezone.utc)
+    frames: list[RawFrame] = []
     conn = db.connect()
     try:
         frames = fetch_since_checkpoint(client, conn, norad_id)
         inserted = db.save_frames(conn, frames)
+        db.record_run(conn, norad_id, started_at, len(frames), inserted)
+    except Exception as err:
+        db.record_run(conn, norad_id, started_at, len(frames), 0, error=f"{type(err).__name__}: {err}")
+        raise
     finally:
         conn.close()
     logging.info("Saved %d new frames (%d already stored) to %s", inserted, len(frames) - inserted, db.DB_PATH)

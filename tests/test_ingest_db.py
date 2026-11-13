@@ -1,11 +1,15 @@
-"""Tests for ingest/db.py. Uses in-memory databases, so no real files are touched."""
+"""Tests for ingest/db.py. Uses in-memory or temporary databases, so real data is never touched."""
 
+import tempfile
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import requests
 
 from ingest import db
-from ingest.__main__ import CATCH_UP_PAGES, FIRST_RUN_PAGES, fetch_since_checkpoint
+from ingest.__main__ import CATCH_UP_PAGES, FIRST_RUN_PAGES, fetch_since_checkpoint, ingest_once
 from ingest.models import RawFrame
 from store import db as store_db
 
@@ -133,6 +137,86 @@ class TestFetchSinceCheckpoint(unittest.TestCase):
 
         self.client.fetch_frames.assert_called_once_with(
             25544, start="2026-10-28T13:00:00Z", max_pages=CATCH_UP_PAGES)
+
+
+class TestRecordRun(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(":memory:")
+        self.started = datetime(2026, 11, 12, 18, 0, tzinfo=timezone.utc)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_records_successful_run(self):
+        db.record_run(self.conn, 25544, self.started, fetched=42, inserted=7)
+        row = self.conn.execute("SELECT * FROM ingest_runs").fetchone()
+
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["fetched"], 42)
+        self.assertEqual(row["inserted"], 7)
+        self.assertEqual(row["started_at"], "2026-11-12T18:00:00+00:00")
+        self.assertEqual(row["started_unix"], int(self.started.timestamp()))
+        self.assertIsNone(row["error"])
+
+    def test_records_failed_run(self):
+        db.record_run(self.conn, 25544, self.started, fetched=0, inserted=0, error="ConnectionError: down")
+        row = self.conn.execute("SELECT * FROM ingest_runs").fetchone()
+
+        self.assertEqual(row["status"], "error")
+        self.assertEqual(row["error"], "ConnectionError: down")
+
+    def test_status_view_summarizes_runs(self):
+        db.record_run(self.conn, 25544, datetime(2026, 11, 12, 18, 0, tzinfo=timezone.utc), 40, 10)
+        db.record_run(self.conn, 25544, datetime(2026, 11, 12, 18, 30, tzinfo=timezone.utc), 30, 5)
+        db.record_run(self.conn, 25544, datetime(2026, 11, 12, 19, 0, tzinfo=timezone.utc), 0, 0, error="boom")
+        row = self.conn.execute("SELECT * FROM ingest_status WHERE norad_id = 25544").fetchone()
+
+        self.assertEqual(row["total_runs"], 3)
+        self.assertEqual(row["failed_runs"], 1)
+        self.assertEqual(row["frames_fetched"], 70)
+        self.assertEqual(row["frames_saved"], 15)
+        self.assertEqual(row["last_run"], "2026-11-12T19:00:00+00:00")
+        self.assertEqual(row["last_success"], "2026-11-12T18:30:00+00:00")
+
+
+class TestIngestOnceRecordsRuns(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.db_path = Path(tmp.name) / "test.db"
+        self.real_connect = db.connect
+        for target, value in [("ingest.__main__.db.connect", lambda: self.real_connect(self.db_path)),
+                              ("ingest.__main__.OUTPUT_DIR", Path(tmp.name) / "raw")]:
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.client = MagicMock()
+
+    def runs(self):
+        conn = self.real_connect(self.db_path)
+        try:
+            return [dict(r) for r in conn.execute("SELECT * FROM ingest_runs")]
+        finally:
+            conn.close()
+
+    def test_successful_run_is_recorded(self):
+        self.client.fetch_frames.return_value = [make_frame("aa"), make_frame("bb"), make_frame("aa")]
+
+        inserted = ingest_once(self.client, 25544)
+
+        self.assertEqual(inserted, 2)
+        [run] = self.runs()
+        self.assertEqual((run["status"], run["fetched"], run["inserted"]), ("ok", 3, 2))
+
+    def test_failed_run_is_recorded_and_error_still_raised(self):
+        self.client.fetch_frames.side_effect = requests.ConnectionError("network down")
+
+        with self.assertRaises(requests.ConnectionError):
+            ingest_once(self.client, 25544)
+
+        [run] = self.runs()
+        self.assertEqual(run["status"], "error")
+        self.assertIn("ConnectionError: network down", run["error"])
 
 
 if __name__ == "__main__":
