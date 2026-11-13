@@ -3,6 +3,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from ingest.models import RawFrame
 from ingest.satnogs_client import SatNOGSAuthError, SatNOGSClient, deduplicate
 
@@ -76,6 +78,15 @@ class TestSatNOGSClient(unittest.TestCase):
 
         self.assertEqual(self.client.session.get.call_count, 3)
 
+    def test_warns_when_pages_run_out_before_frames_do(self):
+        endless = make_response(body={"results": [make_entry()], "next": "https://next"})
+        self.client.session.get.return_value = endless
+
+        with self.assertLogs("ingest.satnogs_client", level="WARNING") as logs:
+            self.client.fetch_frames(25544, max_pages=2)
+
+        self.assertIn("older frames were not fetched", logs.output[0])
+
     def test_skips_malformed_entries(self):
         bad = make_entry(frame_hex="not-hex")
         body = {"results": [bad, make_entry("aa")], "next": None}
@@ -101,6 +112,24 @@ class TestSatNOGSClient(unittest.TestCase):
         with self.assertRaises(Exception):
             self.client.fetch_frames(25544)
         self.assertEqual(self.client.session.get.call_count, 3)  # 1 try + 2 retries
+
+    @patch("ingest.satnogs_client.time.sleep")
+    def test_retries_after_network_error(self, mock_sleep):
+        ok = make_response(body={"results": [make_entry()], "next": None})
+        self.client.session.get.side_effect = [requests.ConnectionError("DNS lookup failed"), ok]
+
+        frames = self.client.fetch_frames(25544)
+
+        self.assertEqual(len(frames), 1)
+        mock_sleep.assert_called_once_with(30.0)
+
+    @patch("ingest.satnogs_client.time.sleep")
+    def test_network_error_raised_after_max_retries(self, mock_sleep):
+        self.client.session.get.side_effect = requests.Timeout("too slow")
+
+        with self.assertRaises(requests.Timeout):
+            self.client.fetch_frames(25544)
+        self.assertEqual(self.client.session.get.call_count, 3)
 
     def test_bad_token_raises_auth_error(self):
         self.client.session.get.return_value = make_response(status=401)
