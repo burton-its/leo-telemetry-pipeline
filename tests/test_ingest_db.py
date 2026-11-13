@@ -1,15 +1,18 @@
 """Tests for ingest/db.py. Uses in-memory databases, so no real files are touched."""
 
 import unittest
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 from ingest import db
+from ingest.__main__ import CATCH_UP_PAGES, FIRST_RUN_PAGES, fetch_since_checkpoint
 from ingest.models import RawFrame
 from store import db as store_db
 
 
-def make_frame(frame_hex="c0ffee", timestamp="2026-10-28T19:04:11Z", observer="KJ6ABC"):
+def make_frame(frame_hex="c0ffee", timestamp="2026-10-28T19:04:11Z", observer="KJ6ABC", norad_id=25544):
     """A RawFrame built the same way the real client builds one."""
-    return RawFrame.from_api({"norad_cat_id": 25544, "timestamp": timestamp,
+    return RawFrame.from_api({"norad_cat_id": norad_id, "timestamp": timestamp,
                               "observer": observer, "station_id": 42, "frame": frame_hex})
 
 
@@ -74,6 +77,62 @@ class TestMatchesDecodedStore(unittest.TestCase):
 
         self.assertEqual(matches, 1)
         conn.close()
+
+
+class TestCheckpoint(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_no_frames_means_no_checkpoint(self):
+        self.assertIsNone(db.get_checkpoint(self.conn, 25544))
+
+    def test_checkpoint_is_newest_frame_time(self):
+        db.save_frames(self.conn, [make_frame("aa", timestamp="2026-10-28T19:00:00Z"),
+                                   make_frame("bb", timestamp="2026-10-28T21:30:00Z"),
+                                   make_frame("cc", timestamp="2026-10-28T20:15:00Z")])
+
+        self.assertEqual(db.get_checkpoint(self.conn, 25544),
+                         datetime(2026, 10, 28, 21, 30, tzinfo=timezone.utc))
+
+    def test_checkpoint_is_per_satellite(self):
+        db.save_frames(self.conn, [make_frame("aa", timestamp="2026-10-28T19:00:00Z"),
+                                   make_frame("bb", timestamp="2026-10-29T08:00:00Z", norad_id=99999)])
+
+        self.assertEqual(db.get_checkpoint(self.conn, 25544),
+                         datetime(2026, 10, 28, 19, 0, tzinfo=timezone.utc))
+
+    def test_ignores_frames_stamped_in_the_future(self):
+        db.save_frames(self.conn, [make_frame("aa", timestamp="2026-10-28T19:00:00Z"),
+                                   make_frame("bb", timestamp="2099-01-01T00:00:00Z")])
+
+        self.assertEqual(db.get_checkpoint(self.conn, 25544),
+                         datetime(2026, 10, 28, 19, 0, tzinfo=timezone.utc))
+
+
+class TestFetchSinceCheckpoint(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(":memory:")
+        self.client = MagicMock()
+        self.client.fetch_frames.return_value = []
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_first_run_fetches_newest_pages(self):
+        fetch_since_checkpoint(self.client, self.conn, 25544)
+
+        self.client.fetch_frames.assert_called_once_with(25544, max_pages=FIRST_RUN_PAGES)
+
+    def test_later_runs_start_before_checkpoint(self):
+        db.save_frames(self.conn, [make_frame(timestamp="2026-10-28T19:00:00Z")])
+
+        fetch_since_checkpoint(self.client, self.conn, 25544)
+
+        self.client.fetch_frames.assert_called_once_with(
+            25544, start="2026-10-28T13:00:00Z", max_pages=CATCH_UP_PAGES)
 
 
 if __name__ == "__main__":

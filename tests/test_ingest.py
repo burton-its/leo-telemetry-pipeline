@@ -76,6 +76,15 @@ class TestSatNOGSClient(unittest.TestCase):
 
         self.assertEqual(self.client.session.get.call_count, 3)
 
+    def test_warns_when_pages_run_out_before_frames_do(self):
+        endless = make_response(body={"results": [make_entry()], "next": "https://next"})
+        self.client.session.get.return_value = endless
+
+        with self.assertLogs("ingest.satnogs_client", level="WARNING") as logs:
+            self.client.fetch_frames(25544, max_pages=2)
+
+        self.assertIn("older frames were not fetched", logs.output[0])
+
     def test_skips_malformed_entries(self):
         bad = make_entry(frame_hex="not-hex")
         body = {"results": [bad, make_entry("aa")], "next": None}

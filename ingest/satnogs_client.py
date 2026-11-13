@@ -59,6 +59,8 @@ class SatNOGSClient:
             url = self._next_page_url(response, data)
             pages += 1
 
+        if url:
+            logger.warning("NORAD %s: stopped at max_pages=%d, older frames were not fetched", norad_id, max_pages)
         logger.info("NORAD %s: fetched %d frames over %d page(s)", norad_id, len(frames), pages)
         return frames
 

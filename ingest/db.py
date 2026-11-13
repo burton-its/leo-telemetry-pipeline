@@ -61,3 +61,20 @@ def save_frames(conn: sqlite3.Connection, frames: list[RawFrame]) -> int:
     with conn:
         conn.executemany(INSERT_SQL, rows)
     return conn.total_changes - before
+
+
+def get_checkpoint(conn: sqlite3.Connection, norad_id: int) -> datetime | None:
+    """Time of the newest frame saved for this satellite, or None if there are none yet.
+
+    Frames stamped later than the moment we downloaded them come from a ground
+    station with a wrong clock. They are ignored here so one bad timestamp
+    can't push the checkpoint into the future.
+    """
+    row = conn.execute(
+        "SELECT MAX(ts) FROM raw_frames WHERE norad_id = ? AND ts <= fetched_at",
+        (norad_id,),
+    ).fetchone()
+    newest = row[0]
+    if newest is None:
+        return None
+    return datetime.fromisoformat(newest)
