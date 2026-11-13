@@ -1,7 +1,10 @@
 """Command-line entry point: python -m ingest [NORAD_ID]
 
-Fetches telemetry, removes duplicates, and saves frames as JSON Lines
-(one JSON object per line) so the Decode stage can read them.
+Fetches telemetry from SatNOGS and saves it to the raw_frames table in
+data/leo.db (duplicates are skipped automatically).
+
+For now it ALSO writes data/raw/<id>.jsonl, because the Decode stage still
+reads that file. Remove write_jsonl() once Decode reads from raw_frames.
 """
 
 import json
@@ -10,6 +13,8 @@ import os
 import sys
 from pathlib import Path
 
+from ingest import db
+from ingest.models import RawFrame
 from ingest.satnogs_client import SatNOGSAuthError, SatNOGSClient, deduplicate
 
 ISS_NORAD_ID = 25544
@@ -31,15 +36,26 @@ def main() -> int:
         print(err, file=sys.stderr)
         return 1
 
-    unique = deduplicate(frames)
+    conn = db.connect()
+    try:
+        inserted = db.save_frames(conn, frames)
+    finally:
+        conn.close()
+    print(f"Saved {inserted} new frames ({len(frames) - inserted} already stored) to {db.DB_PATH}")
+
+    out_path = write_jsonl(norad_id, deduplicate(frames))
+    print(f"Also wrote {out_path} for the Decode stage")
+    return 0
+
+
+def write_jsonl(norad_id: int, frames: list[RawFrame]) -> Path:
+    """TEMPORARY: Decode still reads this file. Delete once it reads raw_frames."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / f"{norad_id}.jsonl"
     with out_path.open("w") as f:
-        for frame in unique:
+        for frame in frames:
             f.write(json.dumps(frame.to_dict()) + "\n")
-
-    print(f"Saved {len(unique)} unique frames ({len(frames) - len(unique)} duplicates) to {out_path}")
-    return 0
+    return out_path
 
 
 if __name__ == "__main__":
