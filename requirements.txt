@@ -6,3 +6,5 @@
    crcmod
    matplotlib
    dotenv
+   fastapi
+   uvicorn[standard]
