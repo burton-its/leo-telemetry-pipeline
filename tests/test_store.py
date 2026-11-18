@@ -3,13 +3,15 @@
 import json
 import tempfile
 import unittest
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from decode.registry import decode_frame
 from ingest.models import RawFrame
-from store.db import connect, insert_decoded, load_decoded_jsonl
+from store.db import connect, insert_decoded, insert_tle_positions, load_decoded_jsonl
 from store.export import export_all, summary_json
+from store.track import build_track
 
 try:
     import aprslib  # noqa: F401
@@ -131,6 +133,73 @@ class TestStore(unittest.TestCase):
             with self.assertLogs("store.db", level="WARNING"):
                 result = load_decoded_jsonl(self.conn, path)
         self.assertEqual(result, (1, 0, 2))
+
+
+# Same fields as SatTelemetry in the mapping module (PR #6).
+FakeTelemetry = namedtuple(
+    "FakeTelemetry",
+    "sat_name norad_id intl_designator utc_epoch tle_age_hours inclination_deg "
+    "latitude_deg longitude_deg altitude_km speed_inertial_kms speed_earth_kms speed_ground_kms")
+
+
+def fake_telemetry(lat=10.0, lon=20.0, alt=420.0):
+    return FakeTelemetry("ISS (ZARYA)", 25544, "98067A", T0, 1.5, 51.64,
+                         lat, lon, alt, 7.66, 7.4, 7.0)
+
+
+class TestTlePositions(unittest.TestCase):
+    def setUp(self):
+        self.conn = connect(":memory:")
+
+    def test_insert_then_update_same_moment(self):
+        self.assertEqual(insert_tle_positions(self.conn, [(T0, fake_telemetry())]), 1)
+        insert_tle_positions(self.conn, [(T0, fake_telemetry(alt=415.0))])
+        rows = self.conn.execute("SELECT altitude_km, ts, tle_epoch FROM tle_positions").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["altitude_km"], 415.0)  # fresher value replaced the old one
+        self.assertEqual(rows[0]["ts"], "2026-11-04T19:57:02+00:00")
+        self.assertEqual(rows[0]["tle_epoch"], "2026-11-04T19:57:02+00:00")
+
+    def test_accepts_plain_dicts(self):
+        insert_tle_positions(self.conn, [(T0, fake_telemetry()._asdict())])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM tle_positions").fetchone()[0], 1)
+
+    def test_requires_timezone_aware_time(self):
+        with self.assertRaises(ValueError):
+            insert_tle_positions(self.conn, [(datetime(2026, 11, 4, 19, 0), fake_telemetry())])
+
+    def test_track_json_is_oldest_first_and_latest_ignores_future(self):
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        items = [(now + timedelta(minutes=m), fake_telemetry(lat=float(m))) for m in (-2, -1, 0, 5)]
+        insert_tle_positions(self.conn, items)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = export_all(self.conn, 25544, Path(tmp))
+            track = json.loads(paths[3].read_text())
+            summary = json.loads(paths[2].read_text())
+        self.assertEqual([d["latitude"] for d in track], [-2.0, -1.0, 0.0, 5.0])
+        self.assertEqual(self.conn.execute("SELECT latitude FROM v_tle_latest").fetchone()[0], 0.0)
+        self.assertEqual(summary["tle_latest"][0]["latitude"], 0.0)
+
+    def test_empty_track_exports_empty_array(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = export_all(self.conn, 25544, Path(tmp))
+            self.assertEqual(json.loads(paths[3].read_text()), [])
+            self.assertEqual(json.loads(paths[2].read_text())["tle_latest"], [])
+
+    def test_build_track_window_order_and_skipped_points(self):
+        calls = []
+
+        def fake_map(tle, when):
+            calls.append(when)
+            return None if when.minute == 5 else fake_telemetry()
+
+        now = datetime(2026, 11, 4, 12, 0, 30, tzinfo=timezone.utc)
+        track = build_track(("n", "1", "2"), fake_map, now=now, back=10, ahead=10, step=1)
+        self.assertEqual(len(calls), 21)  # 11:50 .. 12:10 inclusive
+        self.assertEqual(len(track), 20)  # 12:05 returned None and is skipped
+        self.assertEqual(track[0][0], datetime(2026, 11, 4, 11, 50, tzinfo=timezone.utc))
+        self.assertEqual(track[-1][0], datetime(2026, 11, 4, 12, 10, tzinfo=timezone.utc))
+        self.assertEqual([w for w, _ in track], sorted(w for w, _ in track))
 
 
 if __name__ == "__main__":

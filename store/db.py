@@ -110,6 +110,52 @@ SELECT norad_id, ts_unix,
                    'longitude', longitude, 'speed', speed, 'course', course,
                    'altitude', altitude) AS doc
 FROM v_sender_positions;
+
+-- Satellite position computed from orbital elements (TLE + SGP4). This is a
+-- prediction, not a measurement: roughly a kilometre near the TLE's epoch and
+-- worse as the TLE ages (see tle_age_hours).
+CREATE TABLE IF NOT EXISTS tle_positions (
+    id                 INTEGER PRIMARY KEY,
+    norad_id           INTEGER NOT NULL,
+    ts                 TEXT    NOT NULL,       -- the moment this position is FOR (UTC)
+    ts_unix            INTEGER NOT NULL,
+    sat_name           TEXT,
+    latitude           REAL    NOT NULL,
+    longitude          REAL    NOT NULL,
+    altitude_km        REAL,
+    speed_inertial_kms REAL,
+    speed_earth_kms    REAL,
+    speed_ground_kms   REAL,
+    inclination_deg    REAL,
+    tle_epoch          TEXT,                   -- when the TLE itself was issued
+    tle_age_hours      REAL,
+    UNIQUE (norad_id, ts_unix)                 -- re-running updates a point, never duplicates it
+);
+CREATE INDEX IF NOT EXISTS idx_tle_sat_time ON tle_positions (norad_id, ts_unix);
+
+DROP VIEW IF EXISTS v_tle_track;
+CREATE VIEW v_tle_track AS
+SELECT ts, ts_unix, norad_id, sat_name, latitude, longitude, altitude_km,
+       speed_ground_kms, tle_age_hours
+FROM tle_positions;
+
+-- "Where is it now": the newest point that is not in the future.
+DROP VIEW IF EXISTS v_tle_latest;
+CREATE VIEW v_tle_latest AS
+SELECT t.* FROM tle_positions t
+JOIN (SELECT norad_id, MAX(ts_unix) AS ts_unix FROM tle_positions
+      WHERE ts_unix <= CAST(strftime('%s', 'now') AS INTEGER)
+      GROUP BY norad_id) m
+  ON t.norad_id = m.norad_id AND t.ts_unix = m.ts_unix;
+
+DROP VIEW IF EXISTS v_tle_track_json;
+CREATE VIEW v_tle_track_json AS
+SELECT norad_id, ts_unix,
+       json_object('ts', ts, 'ts_unix', ts_unix, 'sat_name', sat_name,
+                   'latitude', latitude, 'longitude', longitude,
+                   'altitude_km', altitude_km, 'speed_ground_kms', speed_ground_kms,
+                   'tle_age_hours', tle_age_hours) AS doc
+FROM tle_positions;
 """
 
 INSERT_SQL = """
@@ -180,3 +226,59 @@ def load_decoded_jsonl(conn: sqlite3.Connection, path: Path) -> tuple[int, int, 
                 logger.warning("%s line %d unreadable (%s)", path, line_no, err)
     inserted = _insert(conn, params)
     return inserted, len(params) - inserted, unreadable
+
+
+TLE_UPSERT_SQL = """
+INSERT INTO tle_positions
+    (norad_id, ts, ts_unix, sat_name, latitude, longitude, altitude_km,
+     speed_inertial_kms, speed_earth_kms, speed_ground_kms, inclination_deg,
+     tle_epoch, tle_age_hours)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (norad_id, ts_unix) DO UPDATE SET
+    ts = excluded.ts, sat_name = excluded.sat_name,
+    latitude = excluded.latitude, longitude = excluded.longitude,
+    altitude_km = excluded.altitude_km,
+    speed_inertial_kms = excluded.speed_inertial_kms,
+    speed_earth_kms = excluded.speed_earth_kms,
+    speed_ground_kms = excluded.speed_ground_kms,
+    inclination_deg = excluded.inclination_deg,
+    tle_epoch = excluded.tle_epoch, tle_age_hours = excluded.tle_age_hours
+"""
+
+
+def _tle_params(when: datetime, telemetry) -> tuple:
+    """(time the position is for, SatTelemetry or dict) -> UPSERT parameters."""
+    if when.tzinfo is None:
+        raise ValueError("`when` must be timezone-aware (UTC)")
+    when = when.astimezone(timezone.utc)
+    d = telemetry._asdict() if hasattr(telemetry, "_asdict") else dict(telemetry)
+    epoch = d.get("utc_epoch")
+    return (
+        int(d["norad_id"]),
+        when.isoformat(),
+        int(when.timestamp()),
+        d.get("sat_name"),
+        float(d["latitude_deg"]),
+        float(d["longitude_deg"]),
+        d.get("altitude_km"),
+        d.get("speed_inertial_kms"),
+        d.get("speed_earth_kms"),
+        d.get("speed_ground_kms"),
+        d.get("inclination_deg"),
+        epoch.isoformat() if hasattr(epoch, "isoformat") else epoch,
+        d.get("tle_age_hours"),
+    )
+
+
+def insert_tle_positions(conn: sqlite3.Connection, items: Iterable[tuple]) -> int:
+    """Store (when, telemetry) pairs. Re-storing the same moment updates it.
+
+    `telemetry` is the SatTelemetry tuple from the mapping module (or a dict with
+    the same keys). `when` is passed separately because SatTelemetry does not
+    record the moment it was computed for. Returns the number of rows written.
+    """
+    params = [_tle_params(when, t) for when, t in items]
+    before = conn.total_changes
+    with conn:
+        conn.executemany(TLE_UPSERT_SQL, params)
+    return conn.total_changes - before
