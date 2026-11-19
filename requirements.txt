@@ -1,10 +1,10 @@
-   requests
-   numpy
-   skyfield
-   aprslib
-   ax253
-   crcmod
-   matplotlib
-   dotenv
-   fastapi
-   uvicorn[standard]
+requests==2.34.2
+numpy==2.5.4
+skyfield==1.55
+aprslib==0.7.2
+ax253==0.1.5.post1
+crcmod==1.7
+matplotlib==3.11.2
+python-dotenv==1.2.4
+fastapi==0.162.5
+uvicorn[standard]==0.54.0

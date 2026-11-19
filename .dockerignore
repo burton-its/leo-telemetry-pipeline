@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.env
+.env.*
+!.env.example
+data/
+globe-tracker/
+.idea
+.vscode
