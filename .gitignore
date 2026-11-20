@@ -255,3 +255,4 @@ venv/
 tf-env/
 
 data/
+node_modules/

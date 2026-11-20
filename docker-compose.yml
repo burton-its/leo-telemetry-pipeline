@@ -1,0 +1,67 @@
+# LEO telemetry pipeline
+#
+#   cp .env.example .env     # then fill in both tokens
+#   docker compose up --build
+#
+#   Globe:  http://localhost:8080
+#   API:    http://localhost:8000/api/get-tle-telemetry?ids=25544
+#
+# All Python services share one named volume mounted at /app/data (leo.db, raw/,
+# decoded/, tle/). Use a named volume rather than a bind mount: SQLite file
+# locking over macOS bind mounts is unreliable.
+
+name: leo-telemetry
+
+x-python: &python
+  build: .
+  image: leo-telemetry-python
+  restart: unless-stopped
+  volumes:
+    - leo-data:/app/data
+
+services:
+  # Serves /api/get-tle-telemetry and /api/get-czml for the globe.
+  api:
+    <<: *python
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/docs')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Fetches SatNOGS frames. One process per satellite: copy this block, change
+  # the NORAD id and the service name to add another. --every must be >= 15.
+  ingest-iss:
+    <<: *python
+    command: ["python", "-m", "ingest", "25544", "--every", "15"]
+    environment:
+      SATNOGS_DB_TOKEN: ${SATNOGS_DB_TOKEN:?set SATNOGS_DB_TOKEN in .env}
+
+  # Re-runs decode and store on a timer for every id in NORAD_IDS.
+  pipeline:
+    <<: *python
+    command: ["pipeline.sh"]
+    environment:
+      NORAD_IDS: "25544"
+      PIPELINE_INTERVAL_SECONDS: "900"
+    depends_on:
+      - ingest-iss
+
+  # Static Cesium globe served by nginx, which proxies /api to the api service.
+  web:
+    build:
+      context: ./globe-tracker
+      args:
+        # Baked into the JS bundle at build time (Vite), so use a scoped token.
+        VITE_CESIUM_ION_TOKEN: ${VITE_CESIUM_ION_TOKEN:?set VITE_CESIUM_ION_TOKEN in .env}
+    image: leo-telemetry-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  leo-data:
