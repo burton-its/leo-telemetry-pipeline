@@ -1,0 +1,13 @@
+# Production overrides for a single-server (e.g. AWS EC2) deployment.
+# Serves the globe on port 80 and keeps the API private behind nginx.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Needs Docker Compose 2.24+ for the !reset / !override tags.
+
+services:
+  api:
+    ports: !reset []
+  web:
+    ports: !override
+      - "80:80"
